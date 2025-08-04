@@ -1,9 +1,12 @@
 [package]
 name    = "scriptr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Fast, caching launcher for Cargo single‑file packages"
+homepage = "https://github.com/tekacs/scriptr"
+repository = "https://github.com/tekacs/scriptr"
+documentation = "https://github.com/tekacs/scriptr#readme"
 
 [dependencies]
 anyhow = "1.0"
