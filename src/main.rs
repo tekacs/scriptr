@@ -50,10 +50,6 @@ struct Opts {
 
     /// Path to the Rust script (`.rs`)
     script: PathBuf,
-
-    /// Arguments passed to the script binary (after `--`)
-    #[arg(trailing_var_arg = true)]
-    args: Vec<OsString>,
 }
 
 /// Persisted fingerprint of a script file.
@@ -71,6 +67,41 @@ struct Meta {
 }
 
 fn main() -> Result<()> {
+    // Manual argument parsing to prevent script args from being interpreted as scriptr options
+    let all_args: Vec<String> = std::env::args().collect();
+    let mut script_index = None;
+    
+    // Find the script path (first non-option argument after scriptr options)
+    for (i, arg) in all_args.iter().enumerate().skip(1) {
+        if arg == "--" {
+            // Everything after "--" is for the script
+            if i + 1 < all_args.len() {
+                script_index = Some(i + 1);
+            }
+            break;
+        } else if !arg.starts_with('-') {
+            // Found the script path
+            script_index = Some(i);
+            break;
+        }
+    }
+    
+    // Split args at the script boundary
+    let (scriptr_args, passthrough_args) = if let Some(idx) = script_index {
+        // Give clap everything up to and including the script path
+        let scriptr_args = all_args[..=idx].to_vec();
+        // Everything after the script is passthrough
+        let passthrough_args: Vec<OsString> = all_args[(idx + 1)..]
+            .iter()
+            .map(|s| OsString::from(s))
+            .collect();
+        (scriptr_args, passthrough_args)
+    } else {
+        // No script found - let clap handle it (probably --help or error)
+        (all_args, vec![])
+    };
+    
+    // Parse only scriptr's portion
     let Opts {
         debug,
         verbose,
@@ -79,8 +110,7 @@ fn main() -> Result<()> {
         clean_only,
         hash_only,
         script,
-        args,
-    } = Opts::parse();
+    } = Opts::parse_from(scriptr_args);
 
     let script =
         fs::canonicalize(&script).with_context(|| format!("cannot resolve path {script:?}"))?;
@@ -152,7 +182,7 @@ fn main() -> Result<()> {
                 if verbose {
                     eprintln!("[scriptr] mtime unchanged, using cached binary: {}", meta.bin.display());
                 }
-                exec(meta.bin, args);
+                exec(meta.bin, passthrough_args.clone());
             }
             
             // Need to check hash
@@ -173,7 +203,7 @@ fn main() -> Result<()> {
                 if verbose {
                     eprintln!("[scriptr] Hash unchanged, using cached binary: {}", meta.bin.display());
                 }
-                exec(meta.bin, args);
+                exec(meta.bin, passthrough_args.clone());
             }
         }
     }
@@ -202,7 +232,7 @@ fn main() -> Result<()> {
     if verbose {
         eprintln!("[scriptr] Executing: {}", bin_path.display());
     }
-    exec(bin_path, args)
+    exec(bin_path, passthrough_args)
 }
 
 /* ------------------------------------------------------------------------- */
@@ -266,25 +296,55 @@ fn rebuild(script: &Path, release: bool, verbose: bool) -> Result<PathBuf> {
 
     let mut child = cmd
         .stdout(Stdio::piped())
-        .stderr(if verbose { Stdio::inherit() } else { Stdio::null() })
+        .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn cargo")?;
     let stdout = child.stdout.take().expect("piped");
+    let stderr = child.stderr.take().expect("piped");
 
-    // Parse the JSON stream to find the executable path.
+    // Parse the JSON stream to find the executable path and collect errors.
     let reader = BufReader::new(stdout);
     let mut bin_path = None::<PathBuf>;
+    let mut error_messages = Vec::new();
+    
     for line in reader.lines() {
         let line = line?;
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-            if val["reason"] == "compiler-artifact" && val["executable"].is_string() {
-                bin_path = Some(PathBuf::from(val["executable"].as_str().unwrap()));
+            match val["reason"].as_str() {
+                Some("compiler-artifact") if val["executable"].is_string() => {
+                    bin_path = Some(PathBuf::from(val["executable"].as_str().unwrap()));
+                }
+                Some("compiler-message") => {
+                    if let Some(message) = val["message"]["rendered"].as_str() {
+                        error_messages.push(message.to_string());
+                    }
+                }
+                _ => {}
             }
         }
     }
+    
+    // Collect stderr in case of failure
+    let mut stderr_output = String::new();
+    let mut stderr_reader = BufReader::new(stderr);
+    stderr_reader.read_to_string(&mut stderr_output)?;
+    
     let status = child.wait()?;
     if !status.success() {
+        // Print compilation errors from JSON output
+        for error in &error_messages {
+            eprint!("{}", error);
+        }
+        // Also print any stderr output
+        if !stderr_output.is_empty() {
+            eprintln!("{}", stderr_output);
+        }
         anyhow::bail!("cargo build failed with status {}", status);
+    }
+    
+    // Print stderr output in verbose mode even on success
+    if verbose && !stderr_output.is_empty() {
+        eprintln!("{}", stderr_output);
     }
     bin_path.ok_or_else(|| anyhow::anyhow!("no executable produced"))
 }
