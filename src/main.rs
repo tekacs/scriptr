@@ -79,9 +79,6 @@ fn main() -> Result<()> {
 
     let script =
         fs::canonicalize(&script).with_context(|| format!("cannot resolve path {script:?}"))?;
-    if script.extension().and_then(|s| s.to_str()) != Some("rs") {
-        anyhow::bail!("script must end with .rs");
-    }
 
     if verbose {
         eprintln!("[scriptr] Script: {}", script.display());

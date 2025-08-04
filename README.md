@@ -56,6 +56,17 @@ chmod +x hello.rs
 ./hello.rs World  # Subsequent runs: ~5ms
 ```
 
+### Extension-less Scripts
+
+Unlike `cargo -Zscript` which requires `.rs` extensions, scriptr works with any filename:
+
+```bash
+chmod +x hello     # No .rs extension needed
+./hello World      # Works exactly the same
+```
+
+Note: If you plan to also use `cargo -Zscript` directly with your scripts, stick with `.rs` extensions.
+
 ## Command-line Options
 
 - `-d, --debug` - Build in debug mode (default is release mode)
