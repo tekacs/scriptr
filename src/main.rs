@@ -20,13 +20,29 @@ use std::{
 
 const NAME: &str = "scriptr";
 
-/// CLI: `$0 [--release] <script.rs> [-- <args…>]`
+/// Fast launcher for Rust single-file packages
 #[derive(Parser)]
 #[command(about, version)]
 struct Opts {
-    /// Build with `--release`
-    #[arg(short = 'r', long)]
-    release: bool,
+    /// Build in debug mode (default is release)
+    #[arg(short = 'd', long)]
+    debug: bool,
+
+    /// Verbose output
+    #[arg(short = 'v', long)]
+    verbose: bool,
+
+    /// Force rebuild (ignore cache)
+    #[arg(short = 'f', long)]
+    force: bool,
+
+    /// Clean cache before building
+    #[arg(short = 'c', long)]
+    clean: bool,
+
+    /// Clean cache and exit (don't run)
+    #[arg(short = 'C', long)]
+    clean_only: bool,
 
     /// Path to the Rust script (`.rs`)
     script: PathBuf,
@@ -52,7 +68,11 @@ struct Meta {
 
 fn main() -> Result<()> {
     let Opts {
-        release,
+        debug,
+        verbose,
+        force,
+        clean,
+        clean_only,
         script,
         args,
     } = Opts::parse();
@@ -61,6 +81,10 @@ fn main() -> Result<()> {
         fs::canonicalize(&script).with_context(|| format!("cannot resolve path {script:?}"))?;
     if script.extension().and_then(|s| s.to_str()) != Some("rs") {
         anyhow::bail!("script must end with .rs");
+    }
+
+    if verbose {
+        eprintln!("[scriptr] Script: {}", script.display());
     }
 
     // -------------- cache bookkeeping ---------------------------------------
@@ -75,26 +99,80 @@ fn main() -> Result<()> {
     let path_key = hasher.finalize().to_hex();
     let meta_path = cache_root.join(format!("{path_key}.json"));
 
-    // -------------- fast‑path check -----------------------------------------
-    if let Ok(meta) = read_meta(&meta_path) {
-        let cur_mtime = mtime_secs(&script)?;
-        if meta.fp.mtime == cur_mtime {
-            // unchanged → run cached binary
-            exec(meta.bin, args);
+    if verbose {
+        eprintln!("[scriptr] Cache path: {}", meta_path.display());
+    }
+
+    // -------------- handle clean flags --------------------------------------
+    if clean || clean_only {
+        if meta_path.exists() {
+            if verbose {
+                eprintln!("[scriptr] Removing cache: {}", meta_path.display());
+            }
+            fs::remove_file(&meta_path)?;
+        } else if verbose {
+            eprintln!("[scriptr] No cache to clean");
         }
-        // mtime differs – compute hash only now
-        let cur_hash = file_hash(&script)?;
-        if meta.fp.hash == cur_hash && meta.bin.exists() {
-            exec(meta.bin, args);
+        
+        if clean_only {
+            if verbose {
+                eprintln!("[scriptr] Clean complete, exiting");
+            }
+            return Ok(());
         }
     }
 
+    // -------------- fast‑path check -----------------------------------------
+    if !force {
+        if let Ok(meta) = read_meta(&meta_path) {
+            let cur_mtime = mtime_secs(&script)?;
+            if verbose {
+                eprintln!("[scriptr] Cached mtime: {}, current mtime: {}", meta.fp.mtime, cur_mtime);
+            }
+            
+            if meta.fp.mtime == cur_mtime {
+                // unchanged → run cached binary
+                if verbose {
+                    eprintln!("[scriptr] mtime unchanged, using cached binary: {}", meta.bin.display());
+                }
+                exec(meta.bin, args);
+            }
+            
+            // mtime differs – compute hash only now
+            if verbose {
+                eprintln!("[scriptr] mtime changed, checking hash...");
+            }
+            let cur_hash = file_hash(&script)?;
+            if verbose {
+                eprintln!("[scriptr] Cached hash: {}, current hash: {}", &meta.fp.hash[..16], &cur_hash[..16]);
+            }
+            
+            if meta.fp.hash == cur_hash && meta.bin.exists() {
+                if verbose {
+                    eprintln!("[scriptr] Hash unchanged, using cached binary: {}", meta.bin.display());
+                }
+                exec(meta.bin, args);
+            }
+        } else if verbose {
+            eprintln!("[scriptr] No cache found");
+        }
+    } else if verbose {
+        eprintln!("[scriptr] Force rebuild requested");
+    }
+
     // -------------- rebuild -------------------------------------------------
-    let bin_path = rebuild(&script, release)?;
+    if verbose {
+        eprintln!("[scriptr] Building script...");
+    }
+    let bin_path = rebuild(&script, !debug, verbose)?;
     let fp = Fingerprint {
         mtime: mtime_secs(&script)?,
         hash: file_hash(&script)?,
     };
+    
+    if verbose {
+        eprintln!("[scriptr] Writing cache metadata");
+    }
     write_meta(
         &meta_path,
         &Meta {
@@ -103,6 +181,9 @@ fn main() -> Result<()> {
         },
     )?;
 
+    if verbose {
+        eprintln!("[scriptr] Executing: {}", bin_path.display());
+    }
     exec(bin_path, args)
 }
 
@@ -148,7 +229,7 @@ fn write_meta(p: &Path, meta: &Meta) -> Result<()> {
 }
 
 /// Build the script via Cargo, returning the path to the resulting binary.
-fn rebuild(script: &Path, release: bool) -> Result<PathBuf> {
+fn rebuild(script: &Path, release: bool, verbose: bool) -> Result<PathBuf> {
     let mut cmd = Command::new("cargo");
     cmd.args([
         "+nightly",
@@ -157,14 +238,17 @@ fn rebuild(script: &Path, release: bool) -> Result<PathBuf> {
         "--manifest-path",
         script.to_str().unwrap(),
         "--message-format=json",
-        "--quiet",
     ]);
+    if !verbose {
+        cmd.arg("--quiet");
+    }
     if release {
         cmd.arg("--release");
     }
 
     let mut child = cmd
         .stdout(Stdio::piped())
+        .stderr(if verbose { Stdio::inherit() } else { Stdio::null() })
         .spawn()
         .context("failed to spawn cargo")?;
     let stdout = child.stdout.take().expect("piped");
