@@ -20,8 +20,18 @@ This two-level fingerprinting means touching a file doesn't trigger rebuilds and
 
 ## Installation
 
+Install from crates.io:
+
 ```bash
 cargo install scriptr
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/tekacs/scriptr
+cd scriptr
+cargo install --path .
 ```
 
 ## Usage
