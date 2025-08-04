@@ -84,12 +84,15 @@ Note: If you plan to also use `cargo -Zscript` directly with your scripts, stick
 - `-f, --force` - Force rebuild, ignoring cache
 - `-c, --clean` - Clean cache before building
 - `-C, --clean-only` - Clean cache and exit without running
+- `-H, --hash-only` - Use only hash for comparison (skip mtime check)
 
 By default, scriptr builds in release mode for optimal performance. Use `-d` if you need debug symbols:
 
 ```rust
 #!/usr/bin/env -S scriptr --debug
 ```
+
+The `-H` flag is useful in environments where mtime is unreliable (like some network filesystems or CI environments).
 
 ## Performance
 

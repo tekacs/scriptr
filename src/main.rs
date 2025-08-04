@@ -44,6 +44,10 @@ struct Opts {
     #[arg(short = 'C', long)]
     clean_only: bool,
 
+    /// Use only hash for comparison (ignore mtime)
+    #[arg(short = 'H', long)]
+    hash_only: bool,
+
     /// Path to the Rust script (`.rs`)
     script: PathBuf,
 
@@ -73,6 +77,7 @@ fn main() -> Result<()> {
         force,
         clean,
         clean_only,
+        hash_only,
         script,
         args,
     } = Opts::parse();
@@ -120,25 +125,45 @@ fn main() -> Result<()> {
     }
 
     // -------------- fast‑path check -----------------------------------------
-    if !force {
-        if let Ok(meta) = read_meta(&meta_path) {
-            let cur_mtime = mtime_secs(&script)?;
+    match (force, read_meta(&meta_path)) {
+        (true, _) => {
             if verbose {
-                eprintln!("[scriptr] Cached mtime: {}, current mtime: {}", meta.fp.mtime, cur_mtime);
+                eprintln!("[scriptr] Force rebuild requested");
             }
+        }
+        (false, Err(_)) => {
+            if verbose {
+                eprintln!("[scriptr] No cache found");
+            }
+        }
+        (false, Ok(meta)) => {
+            // Check mtime first (unless in hash-only mode)
+            let mtime_changed = if hash_only {
+                true  // Always check hash in hash-only mode
+            } else {
+                let cur_mtime = mtime_secs(&script)?;
+                if verbose {
+                    eprintln!("[scriptr] Cached mtime: {}, current mtime: {}", meta.fp.mtime, cur_mtime);
+                }
+                meta.fp.mtime != cur_mtime
+            };
             
-            if meta.fp.mtime == cur_mtime {
-                // unchanged → run cached binary
+            if !mtime_changed && meta.bin.exists() {
                 if verbose {
                     eprintln!("[scriptr] mtime unchanged, using cached binary: {}", meta.bin.display());
                 }
                 exec(meta.bin, args);
             }
             
-            // mtime differs – compute hash only now
+            // Need to check hash
             if verbose {
-                eprintln!("[scriptr] mtime changed, checking hash...");
+                if hash_only {
+                    eprintln!("[scriptr] Hash-only mode, checking hash...");
+                } else {
+                    eprintln!("[scriptr] mtime changed, checking hash...");
+                }
             }
+            
             let cur_hash = file_hash(&script)?;
             if verbose {
                 eprintln!("[scriptr] Cached hash: {}, current hash: {}", &meta.fp.hash[..16], &cur_hash[..16]);
@@ -150,11 +175,7 @@ fn main() -> Result<()> {
                 }
                 exec(meta.bin, args);
             }
-        } else if verbose {
-            eprintln!("[scriptr] No cache found");
         }
-    } else if verbose {
-        eprintln!("[scriptr] Force rebuild requested");
     }
 
     // -------------- rebuild -------------------------------------------------
