@@ -58,6 +58,12 @@ fn main() {
 }
 ```
 
+Notes:
+- The front-matter is standard `Cargo.toml` embedded between lines that contain only `---`. You can use common sections like `[package]`, `[dependencies]`, `[features]`, etc.
+- File extension is optional; `hello` or `hello.rs` both work.
+- For a quick primer available at the terminal, see:
+  - `scriptr --help` (includes a shebang + front-matter example and notes)
+
 Then:
 
 ```bash
@@ -93,6 +99,12 @@ By default, scriptr builds in release mode for optimal performance. Use `-d` if 
 ```
 
 The `-H` flag is useful in environments where mtime is unreliable (like some network filesystems or CI environments).
+
+You can also view usage and examples any time:
+
+```bash
+scriptr --help
+```
 
 ## Performance
 

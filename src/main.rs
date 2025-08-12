@@ -22,7 +22,54 @@ const NAME: &str = "scriptr";
 
 /// Fast launcher for Rust single-file packages
 #[derive(Parser)]
-#[command(about, version)]
+#[command(
+    version,
+    about = "Fast launcher for Rust single-file packages",
+    long_about = "Run Rust single-file packages (cargo -Zscript) with millisecond cold starts by caching builds intelligently.",
+    after_help = r#"USAGE AS SHEBANG
+  Put scriptr in your script's shebang and declare Cargo front-matter at the top:
+
+    #!/usr/bin/env scriptr
+    ---
+    [dependencies]
+    clap = { version = "4.5", features = ["derive"] }
+    anyhow = "1.0"
+    ---
+    // normal Rust code follows
+
+  Notes
+  - The front-matter is standard Cargo.toml inlined between lines with just "---".
+    You can use typical sections like [package], [dependencies], [features], etc.
+  - File extension is optional. "hello" or "hello.rs" both work.
+  - When invoking scriptr directly, pass your script args after the path or after "--":
+      scriptr ./hello.rs -- arg1 arg2
+  - To pass flags in the shebang, use env -S (portable across macOS/Linux):
+      #!/usr/bin/env -S scriptr --debug
+
+EXAMPLES
+  Minimal script:
+
+    #!/usr/bin/env scriptr
+    ---
+    [dependencies]
+    clap = { version = "4.5", features = ["derive"] }
+    ---
+
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Args { name: String }
+
+    fn main() {
+        let args = Args::parse();
+        println!("Hello, {}!", args.name);
+    }
+
+  Run it:
+    chmod +x ./hello.rs
+    ./hello.rs World
+"#
+)]
 struct Opts {
     /// Build in debug mode (default is release)
     #[arg(short = 'd', long)]
@@ -48,7 +95,7 @@ struct Opts {
     #[arg(short = 'H', long)]
     hash_only: bool,
 
-    /// Path to the Rust script (`.rs`)
+    /// Path to the Rust script (extension optional)
     script: PathBuf,
 }
 

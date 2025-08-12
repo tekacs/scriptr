@@ -10,7 +10,7 @@ build:
 
 # Run scriptr from source with arbitrary args
 # Usage: just run -- --help
-run args*:
+run *args:
 	cargo run -- {{args}}
 
 # Install scriptr from the current workspace (overwrite existing)
