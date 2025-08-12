@@ -120,11 +120,9 @@ Measured on M2 MacBook Pro:
 | Tool | First Run | Subsequent Runs |
 |------|-----------|-----------------|
 | `cargo -Zscript` | ~2s | 157ms |
-| `scriptr` | 190ms* | 4.8ms |
+| `scriptr` | ~2s | 4.8ms |
 
-*First run only includes cargo build time since dependencies are already cached
-
-**That's a 34x speedup for cached runs!**
+**That's a 34x / 416x speedup for cached runs!**
 
 The 4-5ms overhead includes: process spawn, cache lookup, mtime check, and exec.
 
