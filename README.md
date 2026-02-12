@@ -61,6 +61,8 @@ fn main() {
 Notes:
 - The front-matter is standard `Cargo.toml` embedded between lines that contain only `---`. You can use common sections like `[package]`, `[dependencies]`, `[features]`, etc.
 - File extension is optional; `hello` or `hello.rs` both work.
+- To avoid path-based cache identity, pass a globally unique id (shebang-safe form shown):
+  - `#!/usr/bin/env -S scriptr --id=123e4567-e89b-12d3-a456-426614174000`
 - For a quick primer available at the terminal, see:
   - `scriptr --help` (includes a shebang + front-matter example and notes)
 
@@ -91,6 +93,7 @@ Note: If you plan to also use `cargo -Zscript` directly with your scripts, stick
 - `-c, --clean` - Clean cache before building
 - `-C, --clean-only` - Clean cache and exit without running
 - `-H, --hash-only` - Use only hash for comparison (skip mtime check)
+- `--id <ID>` - Use a globally unique ID as the cache identity instead of absolute script path
 
 By default, scriptr builds in release mode for optimal performance. Use `-d` if you need debug symbols:
 
@@ -134,7 +137,11 @@ Note that we deliberately DO NOT cache the binaries ourselves. We let cargo buil
 - macOS: `~/Library/Caches/scriptr/`
 - Windows: `%LOCALAPPDATA%\scriptr\`
 
-Cache keys are based on the script's absolute path. Each script gets its own metadata file tracking mtime, BLAKE3 hash, and binary location.
+Cache keys are based on either:
+- Script absolute path (default)
+- The value of `--id <ID>` when provided
+
+Each cache entry tracks mtime, BLAKE3 hash, and binary location.
 
 ## Compatibility
 

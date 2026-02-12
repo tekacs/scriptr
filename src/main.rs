@@ -1,6 +1,5 @@
 //! scriptr ‑ fast launcher for Rust single‑file packages (`cargo -Zscript`)
 #![forbid(unsafe_code)]
-#![feature(file_lock)]
 
 use anyhow::{Context, Result};
 use blake3::Hasher;
@@ -45,6 +44,8 @@ const NAME: &str = "scriptr";
       scriptr ./hello.rs -- arg1 arg2
   - To pass flags in the shebang, use env -S (portable across macOS/Linux):
       #!/usr/bin/env -S scriptr --debug
+  - To key cache by a stable global identifier instead of script path:
+      #!/usr/bin/env -S scriptr --id=123e4567-e89b-12d3-a456-426614174000
 
 EXAMPLES
   Minimal script:
@@ -95,6 +96,10 @@ struct Opts {
     #[arg(short = 'H', long)]
     hash_only: bool,
 
+    /// Globally unique script identifier (uses this instead of script path for cache keying)
+    #[arg(long, value_name = "ID")]
+    id: Option<String>,
+
     /// Path to the Rust script (extension optional)
     script: PathBuf,
 }
@@ -116,38 +121,17 @@ struct Meta {
 fn main() -> Result<()> {
     // Manual argument parsing to prevent script args from being interpreted as scriptr options
     let all_args: Vec<String> = std::env::args().collect();
-    let mut script_index = None;
-    
-    // Find the script path (first non-option argument after scriptr options)
-    for (i, arg) in all_args.iter().enumerate().skip(1) {
-        if arg == "--" {
-            // Everything after "--" is for the script
-            if i + 1 < all_args.len() {
-                script_index = Some(i + 1);
-            }
-            break;
-        } else if !arg.starts_with('-') {
-            // Found the script path
-            script_index = Some(i);
-            break;
-        }
-    }
-    
+    let (script_index, passthrough_args) = split_invocation_args(&all_args);
+
     // Split args at the script boundary
-    let (scriptr_args, passthrough_args) = if let Some(idx) = script_index {
+    let scriptr_args = if let Some(idx) = script_index {
         // Give clap everything up to and including the script path
-        let scriptr_args = all_args[..=idx].to_vec();
-        // Everything after the script is passthrough
-        let passthrough_args: Vec<OsString> = all_args[(idx + 1)..]
-            .iter()
-            .map(|s| OsString::from(s))
-            .collect();
-        (scriptr_args, passthrough_args)
+        all_args[..=idx].to_vec()
     } else {
         // No script found - let clap handle it (probably --help or error)
-        (all_args, vec![])
+        all_args
     };
-    
+
     // Parse only scriptr's portion
     let Opts {
         debug,
@@ -156,6 +140,7 @@ fn main() -> Result<()> {
         clean,
         clean_only,
         hash_only,
+        id,
         script,
     } = Opts::parse_from(scriptr_args);
 
@@ -172,13 +157,24 @@ fn main() -> Result<()> {
         .join(NAME);
     fs::create_dir_all(&cache_root)?;
 
-    // Key the metadata file by absolute path (not by contents).
+    // Key metadata either by explicit ID or by absolute path.
     let mut hasher = Hasher::new();
-    hasher.update(script.as_os_str().as_encoded_bytes());
-    let path_key = hasher.finalize().to_hex();
-    let meta_path = cache_root.join(format!("{path_key}.json"));
+    if let Some(ref id) = id {
+        hasher.update(b"id:");
+        hasher.update(id.as_bytes());
+    } else {
+        hasher.update(b"path:");
+        hasher.update(script.as_os_str().as_encoded_bytes());
+    }
+    let cache_key = hasher.finalize().to_hex();
+    let meta_path = cache_root.join(format!("{cache_key}.json"));
 
     if verbose {
+        if let Some(ref id) = id {
+            eprintln!("[scriptr] Cache key source: id={id}");
+        } else {
+            eprintln!("[scriptr] Cache key source: path");
+        }
         eprintln!("[scriptr] Cache path: {}", meta_path.display());
     }
 
@@ -192,7 +188,7 @@ fn main() -> Result<()> {
         } else if verbose {
             eprintln!("[scriptr] No cache to clean");
         }
-        
+
         if clean_only {
             if verbose {
                 eprintln!("[scriptr] Clean complete, exiting");
@@ -216,22 +212,28 @@ fn main() -> Result<()> {
         (false, Ok(meta)) => {
             // Check mtime first (unless in hash-only mode)
             let mtime_changed = if hash_only {
-                true  // Always check hash in hash-only mode
+                true // Always check hash in hash-only mode
             } else {
                 let cur_mtime = mtime_secs(&script)?;
                 if verbose {
-                    eprintln!("[scriptr] Cached mtime: {}, current mtime: {}", meta.fp.mtime, cur_mtime);
+                    eprintln!(
+                        "[scriptr] Cached mtime: {}, current mtime: {}",
+                        meta.fp.mtime, cur_mtime
+                    );
                 }
                 meta.fp.mtime != cur_mtime
             };
-            
+
             if !mtime_changed && meta.bin.exists() {
                 if verbose {
-                    eprintln!("[scriptr] mtime unchanged, using cached binary: {}", meta.bin.display());
+                    eprintln!(
+                        "[scriptr] mtime unchanged, using cached binary: {}",
+                        meta.bin.display()
+                    );
                 }
                 exec(meta.bin, passthrough_args.clone());
             }
-            
+
             // Need to check hash
             if verbose {
                 if hash_only {
@@ -240,15 +242,22 @@ fn main() -> Result<()> {
                     eprintln!("[scriptr] mtime changed, checking hash...");
                 }
             }
-            
+
             let cur_hash = file_hash(&script)?;
             if verbose {
-                eprintln!("[scriptr] Cached hash: {}, current hash: {}", &meta.fp.hash[..16], &cur_hash[..16]);
+                eprintln!(
+                    "[scriptr] Cached hash: {}, current hash: {}",
+                    &meta.fp.hash[..16],
+                    &cur_hash[..16]
+                );
             }
-            
+
             if meta.fp.hash == cur_hash && meta.bin.exists() {
                 if verbose {
-                    eprintln!("[scriptr] Hash unchanged, using cached binary: {}", meta.bin.display());
+                    eprintln!(
+                        "[scriptr] Hash unchanged, using cached binary: {}",
+                        meta.bin.display()
+                    );
                 }
                 exec(meta.bin, passthrough_args.clone());
             }
@@ -264,7 +273,7 @@ fn main() -> Result<()> {
         mtime: mtime_secs(&script)?,
         hash: file_hash(&script)?,
     };
-    
+
     if verbose {
         eprintln!("[scriptr] Writing cache metadata");
     }
@@ -353,7 +362,7 @@ fn rebuild(script: &Path, release: bool, verbose: bool) -> Result<PathBuf> {
     let reader = BufReader::new(stdout);
     let mut bin_path = None::<PathBuf>;
     let mut error_messages = Vec::new();
-    
+
     for line in reader.lines() {
         let line = line?;
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
@@ -370,12 +379,12 @@ fn rebuild(script: &Path, release: bool, verbose: bool) -> Result<PathBuf> {
             }
         }
     }
-    
+
     // Collect stderr in case of failure
     let mut stderr_output = String::new();
     let mut stderr_reader = BufReader::new(stderr);
     stderr_reader.read_to_string(&mut stderr_output)?;
-    
+
     let status = child.wait()?;
     if !status.success() {
         // Print compilation errors from JSON output
@@ -388,7 +397,7 @@ fn rebuild(script: &Path, release: bool, verbose: bool) -> Result<PathBuf> {
         }
         anyhow::bail!("cargo build failed with status {}", status);
     }
-    
+
     // Print stderr output in verbose mode even on success
     if verbose && !stderr_output.is_empty() {
         eprintln!("{}", stderr_output);
@@ -401,4 +410,77 @@ fn exec(bin: PathBuf, args: Vec<OsString>) -> ! {
     // SAFETY: exec only returns on error.
     let err = Command::new(bin).args(args).exec();
     panic!("exec failed: {err:?}");
+}
+
+/// Return `(script_index, passthrough_args)` where `script_index` is the index in `all_args`
+/// for the script path argument, if one is found.
+fn split_invocation_args(all_args: &[String]) -> (Option<usize>, Vec<OsString>) {
+    let mut script_index = None;
+    let mut i = 1;
+
+    while i < all_args.len() {
+        let arg = &all_args[i];
+        if arg == "--" {
+            // `--` separates scriptr args from script invocation.
+            if i + 1 < all_args.len() {
+                script_index = Some(i + 1);
+            }
+            break;
+        }
+
+        // Options that consume one following value. Keep this list in sync with clap options.
+        if arg == "--id" {
+            i += 2;
+            continue;
+        }
+        if arg.starts_with("--id=") {
+            i += 1;
+            continue;
+        }
+
+        if !arg.starts_with('-') {
+            script_index = Some(i);
+            break;
+        }
+
+        i += 1;
+    }
+
+    let passthrough_args = script_index
+        .map(|idx| all_args[(idx + 1)..].iter().map(OsString::from).collect())
+        .unwrap_or_default();
+
+    (script_index, passthrough_args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_invocation_args;
+
+    #[test]
+    fn split_with_id_value_does_not_consume_script_path() {
+        let args = vec![
+            "scriptr".to_string(),
+            "--id".to_string(),
+            "123e4567-e89b-12d3-a456-426614174000".to_string(),
+            "/tmp/script.rs".to_string(),
+            "--flag".to_string(),
+        ];
+        let (script_idx, passthrough) = split_invocation_args(&args);
+        assert_eq!(script_idx, Some(3));
+        assert_eq!(passthrough, vec!["--flag"]);
+    }
+
+    #[test]
+    fn split_with_id_equals_works() {
+        let args = vec![
+            "scriptr".to_string(),
+            "--id=abc".to_string(),
+            "/tmp/script.rs".to_string(),
+            "arg1".to_string(),
+        ];
+        let (script_idx, passthrough) = split_invocation_args(&args);
+        assert_eq!(script_idx, Some(2));
+        assert_eq!(passthrough, vec!["arg1"]);
+    }
 }
