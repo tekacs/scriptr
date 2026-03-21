@@ -92,6 +92,10 @@ struct Opts {
     #[arg(short = 'C', long)]
     clean_only: bool,
 
+    /// Update dependencies before building (re-resolves git deps to latest commits)
+    #[arg(short = 'u', long)]
+    update: bool,
+
     /// Use only hash for comparison (ignore mtime)
     #[arg(short = 'H', long)]
     hash_only: bool,
@@ -139,6 +143,7 @@ fn main() -> Result<()> {
         force,
         clean,
         clean_only,
+        update,
         hash_only,
         id,
         script,
@@ -198,10 +203,15 @@ fn main() -> Result<()> {
     }
 
     // -------------- fast‑path check -----------------------------------------
-    match (force, read_meta(&meta_path)) {
+    let skip_cache = force || update;
+    match (skip_cache, read_meta(&meta_path)) {
         (true, _) => {
             if verbose {
-                eprintln!("[scriptr] Force rebuild requested");
+                if update {
+                    eprintln!("[scriptr] Update requested, skipping cache");
+                } else {
+                    eprintln!("[scriptr] Force rebuild requested");
+                }
             }
         }
         (false, Err(_)) => {
@@ -262,6 +272,14 @@ fn main() -> Result<()> {
                 exec(meta.bin, passthrough_args.clone());
             }
         }
+    }
+
+    // -------------- update deps if requested ---------------------------------
+    if update {
+        if verbose {
+            eprintln!("[scriptr] Updating dependencies...");
+        }
+        update_deps(&script, verbose)?;
     }
 
     // -------------- rebuild -------------------------------------------------
@@ -329,6 +347,30 @@ fn write_meta(p: &Path, meta: &Meta) -> Result<()> {
         f.unlock()?;
     }
     fs::rename(tmp, p)?;
+    Ok(())
+}
+
+/// Run `cargo update` for the script to re-resolve dependencies (e.g. git deps to latest commits).
+fn update_deps(script: &Path, verbose: bool) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.args([
+        "+nightly",
+        "-Zscript",
+        "update",
+        "--manifest-path",
+        script.to_str().unwrap(),
+    ]);
+    if !verbose {
+        cmd.arg("--quiet");
+    }
+
+    let status = cmd
+        .status()
+        .context("failed to run cargo update")?;
+
+    if !status.success() {
+        anyhow::bail!("cargo update failed with status {status}");
+    }
     Ok(())
 }
 

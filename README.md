@@ -90,6 +90,7 @@ Note: If you plan to also use `cargo -Zscript` directly with your scripts, stick
 - `-d, --debug` - Build in debug mode (default is release mode)
 - `-v, --verbose` - Show detailed operation logging  
 - `-f, --force` - Force rebuild, ignoring cache
+- `-u, --update` - Update dependencies before building (re-resolves git deps to latest commits)
 - `-c, --clean` - Clean cache before building
 - `-C, --clean-only` - Clean cache and exit without running
 - `-H, --hash-only` - Use only hash for comparison (skip mtime check)
