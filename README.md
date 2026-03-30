@@ -20,13 +20,20 @@ This two-level fingerprinting means touching a file doesn't trigger rebuilds and
 
 ## Installation
 
-Install from crates.io:
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap tekacs/scriptr https://github.com/tekacs/scriptr
+brew install scriptr
+```
+
+### Cargo
 
 ```bash
 cargo install scriptr
 ```
 
-Or build from source:
+### From source
 
 ```bash
 git clone https://github.com/tekacs/scriptr
