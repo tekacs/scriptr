@@ -98,8 +98,8 @@ Note: If you plan to also use `cargo -Zscript` directly with your scripts, stick
 - `-v, --verbose` - Show detailed operation logging  
 - `-f, --force` - Force rebuild, ignoring cache
 - `-u, --update` - Update dependencies before building (re-resolves git deps to latest commits)
-- `-c, --clean` - Clean cache before building
-- `-C, --clean-only` - Clean cache and exit without running
+- `-c, --clean` - Clean Scriptr cache and Cargo script state before building
+- `-C, --clean-only` - Clean Scriptr cache and Cargo script state, then exit
 - `-H, --hash-only` - Use only hash for comparison (skip mtime check)
 - `--id <ID>` - Use a globally unique ID as the cache identity instead of absolute script path
 
@@ -149,7 +149,7 @@ Cache keys are based on either:
 - Script absolute path (default)
 - The value of `--id <ID>` when provided
 
-Each cache entry tracks mtime, BLAKE3 hash, and binary location.
+Each cache entry tracks mtime, BLAKE3 hash, and binary location. `--clean` removes both this entry and Cargo's per-script build directory under `~/.cargo/build/`.
 
 ## Compatibility
 

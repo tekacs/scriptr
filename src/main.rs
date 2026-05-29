@@ -84,11 +84,11 @@ struct Opts {
     #[arg(short = 'f', long)]
     force: bool,
 
-    /// Clean cache before building
+    /// Clean Scriptr cache and Cargo script state before building
     #[arg(short = 'c', long)]
     clean: bool,
 
-    /// Clean cache and exit (don't run)
+    /// Clean Scriptr cache and Cargo script state, then exit
     #[arg(short = 'C', long)]
     clean_only: bool,
 
@@ -185,14 +185,7 @@ fn main() -> Result<()> {
 
     // -------------- handle clean flags --------------------------------------
     if clean || clean_only {
-        if meta_path.exists() {
-            if verbose {
-                eprintln!("[scriptr] Removing cache: {}", meta_path.display());
-            }
-            fs::remove_file(&meta_path)?;
-        } else if verbose {
-            eprintln!("[scriptr] No cache to clean");
-        }
+        clean_script_state(&script, &meta_path, verbose)?;
 
         if clean_only {
             if verbose {
@@ -350,6 +343,136 @@ fn write_meta(p: &Path, meta: &Meta) -> Result<()> {
     Ok(())
 }
 
+fn clean_script_state(script: &Path, meta_path: &Path, verbose: bool) -> Result<()> {
+    clean_scriptr_meta(meta_path, verbose)?;
+    clean_cargo_script_state(script, verbose)
+}
+
+fn clean_scriptr_meta(meta_path: &Path, verbose: bool) -> Result<()> {
+    if meta_path.exists() {
+        if verbose {
+            eprintln!("[scriptr] Removing cache: {}", meta_path.display());
+        }
+        fs::remove_file(meta_path)?;
+    } else if verbose {
+        eprintln!("[scriptr] No Scriptr cache to clean");
+    }
+    Ok(())
+}
+
+fn clean_cargo_script_state(script: &Path, verbose: bool) -> Result<()> {
+    let build_dir = cargo_script_build_dir(script, verbose)?;
+    if !build_dir.exists() {
+        if verbose {
+            eprintln!(
+                "[scriptr] No Cargo script state to clean: {}",
+                build_dir.display()
+            );
+        }
+        return Ok(());
+    }
+
+    let cargo_home = cargo_home()?;
+    let build_dir = canonical_existing(&build_dir)?;
+    let cargo_build_root = canonical_existing(&cargo_home.join("build"))?;
+    validate_script_build_dir(&build_dir, &cargo_build_root)?;
+
+    if verbose {
+        eprintln!(
+            "[scriptr] Removing Cargo script state: {}",
+            build_dir.display()
+        );
+    }
+    fs::remove_dir_all(&build_dir)?;
+    Ok(())
+}
+
+fn cargo_home() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CARGO_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+
+    dirs::home_dir()
+        .map(|home| home.join(".cargo"))
+        .ok_or_else(|| anyhow::anyhow!("could not determine Cargo home"))
+}
+
+fn canonical_existing(path: &Path) -> Result<PathBuf> {
+    fs::canonicalize(path).with_context(|| format!("cannot resolve path {}", path.display()))
+}
+
+fn validate_script_build_dir(build_dir: &Path, cargo_build_root: &Path) -> Result<()> {
+    if !build_dir.starts_with(cargo_build_root) {
+        anyhow::bail!(
+            "refusing to clean Cargo state outside script build root: {}",
+            build_dir.display()
+        );
+    }
+
+    let relative = build_dir.strip_prefix(cargo_build_root)?;
+    let normal_components = relative
+        .components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .count();
+
+    if normal_components < 2 {
+        anyhow::bail!(
+            "refusing to clean broad Cargo build directory: {}",
+            build_dir.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn cargo_script_build_dir(script: &Path, verbose: bool) -> Result<PathBuf> {
+    let mut cmd = Command::new("cargo");
+    cmd.args([
+        "+nightly",
+        "-Zscript",
+        "metadata",
+        "--manifest-path",
+        script.to_str().unwrap(),
+        "--format-version=1",
+        "--no-deps",
+    ]);
+    if !verbose {
+        cmd.arg("--quiet");
+    }
+
+    let output = cmd.output().context("failed to run cargo metadata")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "cargo metadata failed with status {}: {stderr}",
+            output.status
+        );
+    }
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("failed to parse cargo metadata")?;
+    script_build_dir_from_metadata(&metadata)
+}
+
+fn script_build_dir_from_metadata(metadata: &serde_json::Value) -> Result<PathBuf> {
+    if let Some(build_dir) = metadata["build_directory"].as_str() {
+        return Ok(PathBuf::from(build_dir));
+    }
+
+    let target_dir = metadata["target_directory"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("cargo metadata did not include target_directory"))?;
+    let target_dir = PathBuf::from(target_dir);
+    if target_dir.file_name().is_some_and(|name| name == "target") {
+        return target_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| anyhow::anyhow!("target_directory has no parent"));
+    }
+
+    anyhow::bail!("cargo metadata did not include a script build directory")
+}
+
 /// Run `cargo update` for the script to re-resolve dependencies (e.g. git deps to latest commits).
 fn update_deps(script: &Path, verbose: bool) -> Result<()> {
     let mut cmd = Command::new("cargo");
@@ -364,9 +487,7 @@ fn update_deps(script: &Path, verbose: bool) -> Result<()> {
         cmd.arg("--quiet");
     }
 
-    let status = cmd
-        .status()
-        .context("failed to run cargo update")?;
+    let status = cmd.status().context("failed to run cargo update")?;
 
     if !status.success() {
         anyhow::bail!("cargo update failed with status {status}");
@@ -497,7 +618,9 @@ fn split_invocation_args(all_args: &[String]) -> (Option<usize>, Vec<OsString>) 
 
 #[cfg(test)]
 mod tests {
-    use super::split_invocation_args;
+    use super::{script_build_dir_from_metadata, split_invocation_args, validate_script_build_dir};
+    use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn split_with_id_value_does_not_consume_script_path() {
@@ -524,5 +647,63 @@ mod tests {
         let (script_idx, passthrough) = split_invocation_args(&args);
         assert_eq!(script_idx, Some(2));
         assert_eq!(passthrough, vec!["arg1"]);
+    }
+
+    #[test]
+    fn build_dir_prefers_metadata_build_directory() {
+        let metadata = json!({
+            "build_directory": "/Users/amar/.cargo/build/88/1f72e589db69b7",
+            "target_directory": "/Users/amar/.cargo/build/88/1f72e589db69b7/target"
+        });
+
+        let build_dir = script_build_dir_from_metadata(&metadata).unwrap();
+        assert_eq!(
+            build_dir,
+            Path::new("/Users/amar/.cargo/build/88/1f72e589db69b7")
+        );
+    }
+
+    #[test]
+    fn build_dir_falls_back_to_target_parent() {
+        let metadata = json!({
+            "target_directory": "/Users/amar/.cargo/build/88/1f72e589db69b7/target"
+        });
+
+        let build_dir = script_build_dir_from_metadata(&metadata).unwrap();
+        assert_eq!(
+            build_dir,
+            Path::new("/Users/amar/.cargo/build/88/1f72e589db69b7")
+        );
+    }
+
+    #[test]
+    fn clean_validation_accepts_script_package_dir() {
+        validate_script_build_dir(
+            Path::new("/Users/amar/.cargo/build/88/1f72e589db69b7"),
+            Path::new("/Users/amar/.cargo/build"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn clean_validation_rejects_broad_build_dir() {
+        assert!(
+            validate_script_build_dir(
+                Path::new("/Users/amar/.cargo/build/88"),
+                Path::new("/Users/amar/.cargo/build"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn clean_validation_rejects_paths_outside_cargo_build() {
+        assert!(
+            validate_script_build_dir(
+                Path::new("/Users/amar/.cargo/registry/src"),
+                Path::new("/Users/amar/.cargo/build"),
+            )
+            .is_err()
+        );
     }
 }

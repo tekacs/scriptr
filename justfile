@@ -8,6 +8,14 @@ default:
 build:
 	cargo build
 
+# Format the crate
+fmt:
+	cargo fmt --all
+
+# Run clippy across targets
+clippy:
+	cargo clippy --all-targets -- -D warnings
+
 # Run scriptr from source with arbitrary args
 # Usage: just run -- --help
 run *args:
