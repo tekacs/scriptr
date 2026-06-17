@@ -13,7 +13,7 @@ use std::{
     io::{BufRead, BufReader, Read},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Stdio, exit},
     time::UNIX_EPOCH,
 };
 
@@ -104,6 +104,10 @@ struct Opts {
     #[arg(long, value_name = "ID")]
     id: Option<String>,
 
+    /// Do not run the script (useful for prebuilding or troubleshooting)
+    #[arg(short = 'n', long)]
+    no_run: bool,
+
     /// Path to the Rust script (extension optional)
     script: PathBuf,
 }
@@ -146,8 +150,20 @@ fn main() -> Result<()> {
         update,
         hash_only,
         id,
+        no_run,
         script,
     } = Opts::parse_from(scriptr_args);
+
+    macro_rules! early_exit_if_no_run {
+        () => {
+            if no_run {
+                if verbose {
+                    eprintln!("[scriptr] Skipping execution (-n/--no-run)");
+                }
+                exit(0);
+            }
+        };
+    }
 
     let script =
         fs::canonicalize(&script).with_context(|| format!("cannot resolve path {script:?}"))?;
@@ -234,6 +250,7 @@ fn main() -> Result<()> {
                         meta.bin.display()
                     );
                 }
+                early_exit_if_no_run!();
                 exec(meta.bin, passthrough_args.clone());
             }
 
@@ -262,6 +279,7 @@ fn main() -> Result<()> {
                         meta.bin.display()
                     );
                 }
+                early_exit_if_no_run!();
                 exec(meta.bin, passthrough_args.clone());
             }
         }
@@ -295,6 +313,8 @@ fn main() -> Result<()> {
             bin: bin_path.clone(),
         },
     )?;
+
+    early_exit_if_no_run!();
 
     if verbose {
         eprintln!("[scriptr] Executing: {}", bin_path.display());
